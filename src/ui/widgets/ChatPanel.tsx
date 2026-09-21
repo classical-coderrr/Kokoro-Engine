@@ -90,6 +90,11 @@ interface ChatPanelProps {
     interactionDisabled?: boolean;
 }
 
+interface QueuedChatSubmission {
+    message: string;
+    images: string[];
+}
+
 export type { ChatPanelMessage };
 
 const DEFAULT_CHAT_PANEL_WIDTH = 350;
@@ -365,6 +370,7 @@ export default function ChatPanel({
     }
     const pendingExternalWatchdogTimersRef = useRef<Map<string, PendingExternalWatchdogEntry>>(new Map());
     const cancelledExternalTurnIdsRef = useRef<Map<string, number>>(new Map());
+    const queuedSendRef = useRef<QueuedChatSubmission | null>(null);
     const messagesRef = useRef<ChatMessage[]>([]);
     const [isThinking, setIsThinking] = useState(false);
     const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -647,6 +653,7 @@ export default function ChatPanel({
             listConversations,
             loadConversation,
             clearVisibleConversation: (characterId) => {
+                queuedSendRef.current = null;
                 conversationGenerationRef.current += 1;
                 const turnId = currentTurnRef.current?.turnId;
                 const pendingClientRequestId = pendingTurnRequestRef.current?.clientRequestId;
@@ -674,6 +681,7 @@ export default function ChatPanel({
                 setExpandedTranslations(new Set());
             },
             applyVisibleConversation: (conversation) => {
+                queuedSendRef.current = null;
                 conversationGenerationRef.current += 1;
                 const turnId = currentTurnRef.current?.turnId;
                 const pendingClientRequestId = pendingTurnRequestRef.current?.clientRequestId;
@@ -2305,7 +2313,7 @@ export default function ChatPanel({
     }, []);
 
     // ── Send message ───────────────────────────────────────
-    const handleSend = async (e?: React.FormEvent) => {
+    const handleSend = async (e?: React.FormEvent, queuedSubmission?: QueuedChatSubmission) => {
         e?.preventDefault();
         if (interactionDisabled) return;
 
@@ -2317,9 +2325,20 @@ export default function ChatPanel({
             ]);
         }
 
-        const trimmed = input.trim();
-        const messageImages = visionEnabled ? [...pendingImages] : [];
-        if ((!trimmed && messageImages.length === 0) || isBusy || isBusyRef.current) return;
+        const trimmed = queuedSubmission?.message ?? input.trim();
+        const messageImages = queuedSubmission?.images ?? (visionEnabled ? [...pendingImages] : []);
+        if (!trimmed && messageImages.length === 0) return;
+
+        // The text is complete but the backend may still be finishing translation,
+        // cue analysis, or memory work. Queue one submission instead of racing the
+        // active turn and let the effect below send it after the busy lock clears.
+        if (isBusy || isBusyRef.current) {
+            if (!isStreamingRef.current && !isSwitchingConversationRef.current && !queuedSubmission) {
+                queuedSendRef.current = { message: trimmed, images: messageImages };
+                clearDraft();
+            }
+            return;
+        }
         if (!await ensureMemoryModelReady()) return;
 
         const requestGeneration = conversationGenerationRef.current;
@@ -2386,6 +2405,15 @@ export default function ChatPanel({
             },
         });
     };
+
+    useEffect(() => {
+        if (isBusy || isStreaming || isSwitchingConversationRef.current) return;
+        const queuedSubmission = queuedSendRef.current;
+        if (!queuedSubmission) return;
+
+        queuedSendRef.current = null;
+        void handleSend(undefined, queuedSubmission);
+    }, [isBusy, isStreaming]);
 
     // ── Image upload ───────────────────────────────────────
     const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2556,6 +2584,7 @@ export default function ChatPanel({
     const executeClear = async () => {
         setShowClearConfirm(false);
         if (isBusyRef.current) return;
+        queuedSendRef.current = null;
         setIsBusy(true);
         isBusyRef.current = true;
         try {
@@ -3514,13 +3543,17 @@ export default function ChatPanel({
                                 e.preventDefault();
                                 handleStopGeneration();
                             } : undefined}
-                            disabled={isStreaming ? isStopping : (isBusy || (!input.trim() && !hasSendableImages))}
+                            disabled={isStreaming
+                                ? isStopping
+                                : (isSwitchingConversation || (!input.trim() && !hasSendableImages))}
                             className={clsx(
                                 "p-2 rounded-xl transition-colors",
                                 isStreaming
                                     ? "bg-red-500 text-white hover:bg-red-400"
                                     : "bg-[var(--color-accent)] text-black hover:bg-white",
-                                (isStreaming ? isStopping : (isBusy || (!input.trim() && !hasSendableImages))) && "opacity-50 cursor-not-allowed"
+                                (isStreaming
+                                    ? isStopping
+                                    : (isSwitchingConversation || (!input.trim() && !hasSendableImages))) && "opacity-50 cursor-not-allowed"
                             )}
                             aria-label={isStreaming ? t("chat.actions.stop") : "Send message"}
                             title={isStreaming ? (isStopping ? t("chat.actions.stopping") : t("chat.actions.stop")) : undefined}

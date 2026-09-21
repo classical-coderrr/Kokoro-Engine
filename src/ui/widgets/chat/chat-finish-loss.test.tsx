@@ -323,11 +323,12 @@ describe("ChatPanel - dropped chat-turn-finish handling", () => {
         });
         expect(textarea.value).toBe("Draft while finalizing");
 
-        // The backend turn is still busy, so sending remains guarded until finish.
+        // The send action is available and queues the draft while the backend turn finishes.
         const sendButton = container.querySelector('button[aria-label="Send message"]') as HTMLButtonElement;
-        expect(sendButton.disabled).toBe(true);
+        expect(sendButton.disabled).toBe(false);
         await act(async () => {
             form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+            for (let i = 0; i < 5; i++) await Promise.resolve();
         });
         expect(streamChatMock).toHaveBeenCalledTimes(1);
 
@@ -337,6 +338,20 @@ describe("ChatPanel - dropped chat-turn-finish handling", () => {
                 user_message_id: 601,
                 assistant_message_id: 602,
                 client_request_id: clientRequestId,
+                status: "completed",
+            });
+            for (let i = 0; i < 5; i++) await Promise.resolve();
+        });
+
+        expect(streamChatMock).toHaveBeenCalledTimes(2);
+        expect(streamChatMock.mock.calls[1][0].message).toBe("Draft while finalizing");
+
+        await act(async () => {
+            streamChatResolver?.({
+                conversation_id: "conv-1",
+                user_message_id: 603,
+                assistant_message_id: 604,
+                client_request_id: streamChatMock.mock.calls[1][0].client_request_id,
                 status: "completed",
             });
             for (let i = 0; i < 5; i++) await Promise.resolve();
