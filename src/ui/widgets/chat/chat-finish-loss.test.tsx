@@ -72,6 +72,7 @@ describe("ChatPanel - dropped chat-turn-finish handling", () => {
     // Event callback captures
     let turnStartCb: ((event: any) => void) | null = null;
     let turnDeltaCb: ((event: any) => void) | null = null;
+    let turnTextCompleteCb: ((event: any) => void) | null = null;
     let turnFinishCb: ((event: any) => void) | null = null;
     let turnAcknowledgedCb: ((event: any) => void) | null = null;
 
@@ -84,6 +85,7 @@ describe("ChatPanel - dropped chat-turn-finish handling", () => {
         vi.clearAllMocks();
         turnStartCb = null;
         turnDeltaCb = null;
+        turnTextCompleteCb = null;
         turnFinishCb = null;
         turnAcknowledgedCb = null;
         streamChatResolver = null;
@@ -138,7 +140,10 @@ describe("ChatPanel - dropped chat-turn-finish handling", () => {
             turnFinishCb = cb;
             return Promise.resolve(() => { turnFinishCb = null; });
         });
-        vi.spyOn(bridge, "onChatTurnTextComplete").mockImplementation(() => Promise.resolve(() => {}));
+        vi.spyOn(bridge, "onChatTurnTextComplete").mockImplementation((cb: any) => {
+            turnTextCompleteCb = cb;
+            return Promise.resolve(() => { turnTextCompleteCb = null; });
+        });
         vi.spyOn(bridge, "onChatError").mockImplementation(() => Promise.resolve(() => {}));
         vi.spyOn(bridge, "onChatWarning").mockImplementation(() => Promise.resolve(() => {}));
         vi.spyOn(bridge, "onChatFailure").mockImplementation(() => Promise.resolve(() => {}));
@@ -269,6 +274,73 @@ describe("ChatPanel - dropped chat-turn-finish handling", () => {
         // Second streamChat must have been triggered!
         expect(streamChatMock).toHaveBeenCalledTimes(2);
         expect(streamChatMock.mock.calls[1][0].message).toBe("How is the weather?");
+    });
+
+    it("allows drafting after text completes while waiting for the final turn cleanup", async () => {
+        await act(async () => {
+            root.render(createElement(ChatPanel));
+            for (let i = 0; i < 5; i++) await Promise.resolve();
+        });
+
+        const textarea = container.querySelector('textarea[data-onboarding-id="chat-input"]') as HTMLTextAreaElement;
+        const form = container.querySelector("form") as HTMLFormElement;
+
+        await act(async () => {
+            setTextareaValue(textarea, "First message");
+            form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+            for (let i = 0; i < 5; i++) await Promise.resolve();
+        });
+
+        const clientRequestId = streamChatMock.mock.calls[0][0].client_request_id;
+        await act(async () => {
+            turnStartCb?.({
+                turn_id: "turn-text-complete",
+                client_request_id: clientRequestId,
+                conversation_id: "conv-1",
+                user_message_id: 601,
+            });
+            turnDeltaCb?.({
+                turn_id: "turn-text-complete",
+                delta: "Completed visible answer",
+            });
+        });
+
+        expect(textarea.disabled).toBe(true);
+
+        await act(async () => {
+            turnTextCompleteCb?.({
+                turn_id: "turn-text-complete",
+                text: "Completed visible answer",
+                translation_pending: false,
+                translation: null,
+            });
+        });
+
+        // The answer is visible, so the user can prepare the next message.
+        expect(textarea.disabled).toBe(false);
+        await act(async () => {
+            setTextareaValue(textarea, "Draft while finalizing");
+        });
+        expect(textarea.value).toBe("Draft while finalizing");
+
+        // The backend turn is still busy, so sending remains guarded until finish.
+        const sendButton = container.querySelector('button[aria-label="Send message"]') as HTMLButtonElement;
+        expect(sendButton.disabled).toBe(true);
+        await act(async () => {
+            form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        });
+        expect(streamChatMock).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            streamChatResolver?.({
+                conversation_id: "conv-1",
+                user_message_id: 601,
+                assistant_message_id: 602,
+                client_request_id: clientRequestId,
+                status: "completed",
+            });
+            for (let i = 0; i < 5; i++) await Promise.resolve();
+        });
     });
 
     it("preserves visible messages and reports an error when clearing history fails", async () => {

@@ -3366,7 +3366,7 @@ export default function ChatPanel({
                         "hover:border-white/20",
                         "focus-within:!border-[var(--color-accent)] focus-within:shadow-[0_0_10px_rgba(0,240,255,0.25)]",
                         "transition-colors",
-                        isBusy && "opacity-50 cursor-not-allowed"
+                        (interactionDisabled || isStreaming || isSwitchingConversation) && "opacity-50 cursor-not-allowed"
                     )}
                 >
                     <textarea
@@ -3383,7 +3383,7 @@ export default function ChatPanel({
                         }}
                         data-onboarding-id="chat-input"
                         placeholder={t("chat.input.placeholder")}
-                        disabled={isBusy}
+                        disabled={interactionDisabled || isStreaming || isSwitchingConversation}
                         style={{ outline: "none", boxShadow: "none" }}
                         className={clsx(
                             "w-full flex-1 bg-transparent border-none text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)]",
